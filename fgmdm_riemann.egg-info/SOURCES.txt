@@ -1,0 +1,8 @@
+setup.py
+fgmdm_riemann/__init__.py
+fgmdm_riemann/fgmdm.py
+fgmdm_riemann.egg-info/PKG-INFO
+fgmdm_riemann.egg-info/SOURCES.txt
+fgmdm_riemann.egg-info/dependency_links.txt
+fgmdm_riemann.egg-info/requires.txt
+fgmdm_riemann.egg-info/top_level.txt
