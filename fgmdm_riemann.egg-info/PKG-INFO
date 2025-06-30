@@ -1,5 +1,15 @@
-Metadata-Version: 2.1
-Name: fgmdm-riemann
+Metadata-Version: 2.4
+Name: fgmdm_riemann
 Version: 0.1
 Summary: Riemannian classifier for EEG data
 Author: Alessio Palatella
+Requires-Dist: numpy
+Requires-Dist: scipy
+Requires-Dist: joblib
+Requires-Dist: pyriemann
+Requires-Dist: scikit-learn
+Requires-Dist: pandas
+Requires-Dist: tqdm
+Dynamic: author
+Dynamic: requires-dist
+Dynamic: summary
