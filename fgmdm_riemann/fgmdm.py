@@ -2,12 +2,13 @@
 
 import numpy as np
 from pyriemann.classification import FgMDM as fgmdm
-from sklearn import svm
-from sklearn.ensemble import StackingClassifier
-from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import cohen_kappa_score, confusion_matrix, log_loss
-from pyriemann.utils.tangentspace import tangent_space
-import matplotlib.pyplot as plt
+from pyriemann.utils.tangentspace import tangent_space, log_map_riemann, exp_map_riemann
+from pyriemann.utils.mean import mean_riemann
+from pyriemann.utils.distance import distance_riemann
+from pyriemann.utils.test import is_sym_pos_def
+import rospy
+
 
 # model.centroids_  # shape (n_classes, n_features)
 
@@ -18,9 +19,6 @@ class FgMDM:
         self.mdl = []
 
 
-
-    # train fgmdm model for each band
-    # data = centered cov matrices
     def train(self, data, labels, classes, idx_train, idx_val):#, ref_matrix, n_components_W=None):
         self.classes = np.array(classes)
 
@@ -34,54 +32,37 @@ class FgMDM:
             lbl_train = labels[idx_train]
 
             model = fgmdm(n_jobs=self.njobs)
-            model.fit(cov_train, lbl_train)
+            model.fit(cov_train,lbl_train)
 
             self.mdl.append(model)
 
-        # self.evaluate_on_validation(data[:, idx_val], labels[idx_val])
-        self.evaluate_on_training(data[:, idx_train], labels[idx_train], classes)
+        #self.evaluate_on_validation(data[:,idx_val], labels[idx_val])
 
 
-    def evaluate_on_validation(self, data, labels, classes):
+    def evaluate_on_validation(self, data, labels):
         print(' - Evaluating models on validation set')
         self.val_classification = self.predict(data)
         self.val_probabilities = self.predict_probabilities(data)
         self.val_distances = self.get_distances_fromCentroids(data)
-        self.val_accuracies = self.get_accuracies(self.val_classification, labels, classes)
+        self.val_accuracies = self.get_accuracies(self.val_classification, labels)
         #self.val_kappa = self.get_kappa_values(self.val_classification, labels)
         self.val_confMatrix = self.get_confusion_matrix(self.val_classification, labels)
         #self.val_log_loss = self.get_log_loss(self.val_classification, labels)
         self.get_merge_grid()
         #self.evaluate_on_merged_models(data, labels)
-
-
-
-    def evaluate_on_training(self, data, labels, classes):
-        print(' - Evaluating models on training set')
-        self.train_classification = self.predict(data)
-        self.train_probabilities = self.predict_probabilities(data)
-        self.train_distances = self.get_distances_fromCentroids(data)
-        self.train_accuracies = self.get_accuracies(self.train_classification, labels, classes)
-        #self.val_kappa = self.get_kappa_values(self.val_classification, labels)
-        self.train_confMatrix = self.get_confusion_matrix(self.train_classification, labels)
-        #self.val_log_loss = self.get_log_loss(self.val_classification, labels)
-        #self.get_merge_grid()
-        #self.merge_grid = self.train_accuracies.copy() 
-        #self.evaluate_on_merged_models(data, labels)
         
 
 
-    def predict(self, data):
+    def predict(self,data):
         pred_proba = self.predict_probabilities(data)
         pred_class = np.zeros(pred_proba.shape[0:2], dtype=int)
         for bId in range(self.n_bands):
-            cl = np.argmax(pred_proba[bId], axis=1)
+            cl = np.argmax(pred_proba[bId],axis=1)
             pred_class[bId] = self.classes[cl]
         return pred_class
 
 
-
-    def predict_probabilities(self, data):
+    def predict_probabilities(self,data):
         n_samples = data.shape[1]
         pred_proba = np.empty((self.n_bands, n_samples, self.n_classes), dtype=float)
         for bId in range(self.n_bands):
@@ -90,8 +71,7 @@ class FgMDM:
         return pred_proba
     
     
-
-    def get_distances_fromCentroids(self, data):
+    def get_distances_fromCentroids(self,data):
         n_samples = data.shape[1]
         distances = np.empty((self.n_bands, n_samples, self.n_classes),dtype=float)
         for bId in range(self.n_bands):
@@ -100,13 +80,8 @@ class FgMDM:
         return distances
     
 
-
-    def get_accuracies(self, pred_class, true_class, classes):
-        return [
-            np.sum((pred_class==true_class)[0][(true_class==classes[0])], axis=0)/np.sum((true_class==classes[0])),
-            np.sum((pred_class==true_class)[0][(true_class==classes[1])], axis=0)/np.sum((true_class==classes[1]))
-        ]
-
+    def get_accuracies(self, pred_class, true_class):
+        return np.sum(pred_class==true_class,axis=1)/len(true_class)
 
 
     def get_confusion_matrix(self, pred_class, true_class):
@@ -116,76 +91,20 @@ class FgMDM:
         return confMatrix
 
 
-
     def get_merge_grid(self):
         #self.merge_grid = np.zeros((self.n_bands,1))
         self.merge_grid = self.val_accuracies.copy()   
 
     
-    # merge the output of two classifiers
-    def merge_bands(self, pred_proba, labels=None, idx_subtrain=None, idx_subval=None, method='weighted_avg'):
-        if pred_proba.shape[0]>1:
-            n_sample = pred_proba.shape[1]
-            merged_proba = np.empty((1, n_sample, self.n_classes))
-            #print('Merging probabilities:')
-            if method=='weighted_avg':
-                # Weighted avg (weight = band accuracy)
-                pred = pred_proba.transpose(1, 0, 2)  # nSample x nBands x nClass
-                t_merged = self.merge_grid.T  @ pred / sum(self.merge_grid) 
-                merged_proba[0] = t_merged
-                merged_class = np.argmax(t_merged, axis=1)
-                merged_class = self.classes[merged_class]
-                if labels is not None:
-                    print('Weighted average----------')
-                    print(confusion_matrix(merged_class, labels))
 
-            #elif method=='avg':
-                t_merged = np.mean(pred_proba, axis=0)
-                #merged_proba[0] = t_merged
-                merged_class = np.argmax(t_merged, axis=1)
-                merged_class = self.classes[merged_class]
-                if labels is not None:
-                    print('Average----------')
-                    print(confusion_matrix(merged_class, labels))
-            
-            #elif method=='stacking':
-                if idx_subtrain is not None and idx_subval is not None:
-                    
-                    # clf = StackingClassifier(estimators=[('band1', self.mdl[0]), ('band2', self.mdl[1])], # estimators will be refitted
-                    #                         final_estimator=LogisticRegression())
-                    # t_merged = clf.fit(cov_events[idx_val[idx_subtrain]], labels[idx_subtrain]).predict_proba(cov_events[idx_val[idx_subval], labels[idx_subval])
-                    
-
-                    # Use a training and a validation subsets obtained as the original validation set
-                    clf = LogisticRegression()
-                    t_merged = clf.fit(pred_proba[:, idx_subtrain, 0].T, labels[idx_subtrain]).predict_proba(pred_proba[:, idx_subval, 0].T)
-                    
-                    # #merged_proba[0] = t_merged
-                    merged_class = np.argmax(t_merged, axis=1)
-                    merged_class = self.classes[merged_class]
-                    if labels is not None:
-                        print('Stacking (logistic) ----------')
-                        print(confusion_matrix(merged_class, labels[idx_subval]))
-
-                    # import matplotlib.pyplot as plt
-                    # plt.scatter(pred_proba[0, idx_subval[merged_class==773], 0], pred_proba[1, idx_subval[merged_class==773], 0], c=labels[idx_subval[merged_class==773]]-770, alpha=0.5, marker='v')
-                    # plt.scatter(pred_proba[0, idx_subval[merged_class==771], 0], pred_proba[1, idx_subval[merged_class==771], 0], c=labels[idx_subval[merged_class==771]]-770, alpha=0.5, marker='o')
-                    
-                    # Use a training and a validation subsets obtained as the original validation set
-                    clf = svm.SVC()
-                    merged_class = clf.fit(pred_proba[:, idx_subtrain, 0].T, labels[idx_subtrain]).predict(pred_proba[:, idx_subval, 0].T)
-                    
-                    if labels is not None:
-                        print('Stacking (SVM) ----------')
-                        print(confusion_matrix(merged_class, labels[idx_subval]))
-
-            return merged_proba 
-        else:
-            return pred_proba
+    def merge_bands(self, pred_proba):
+        n_sample = pred_proba.shape[1]
+        merged_proba = np.empty((1, n_sample, self.n_classes))
+        pred = pred_proba.transpose(1,0,2)  # nSample x nBand x nClass
+        t_merged = self.merge_grid.T  @ pred / sum(self.merge_grid)
+        merged_proba[0] = t_merged
+        return merged_proba 
     
-
-
-
 
     def get_centroids(self, Cref=[]):
         if len(Cref)==0:
@@ -198,13 +117,57 @@ class FgMDM:
         tan_centroids = tangent_space(centroids, Cref=Cref)
         return [centroids, tan_centroids]
     
+    def update(self, update_batch, alpha=0.98, maxiter=25, tol=0.01, fullLogMap=True):
+        # COVS HANNO LA PRIMA E SECONDA DIMENSIONE INVERTITE, DOVREBBERE ESSERE N_BANDS X N_SAMPLES X N_CHANNELS X N_CHANNELS
+        # SE TI SERVE FAI UN np.transpose(covs, (1,0,2,3)) RICORDA DI CAMBIARE GLI INDICI DOPO PERÒ!!! No no, era per ricordarmi questa cosa degli indici invertiti
 
+        covs, lbls = update_batch.get_batch()
+        for bId in range(self.n_bands):
+            new_cov = self.mdl[bId]._fgda.transform(covs[:,bId,:,:])
+            covs[:,bId,:,:] = new_cov
 
+        for clssId, clss in enumerate(self.classes): 
+            idx = (lbls==clss)
+            if sum(idx) == 0: continue #FIXME NON SO SE SERVE FARE QUESTO IF TANTO SE L'INDICE RESTA VUOTO NON FA PRATICAMENTE NULLA.. PROVA ANCHE SENZA
+            for bId in range(self.n_bands):
+                new_centroid = mean_riemann(covs[idx,bId,:,:], maxiter=maxiter)#.reshape(1, self.n_channels, self.n_channels) # AGGIUNGO LA DIMENSIONE DELLE BANDE
 
+                old_centroid = self.mdl[bId]._mdm.covmeans_[clssId]
+                distance = distance_riemann(new_centroid, old_centroid)
 
+                # # set numpy print options to show first 3 decimals
+                # np.set_printoptions(precision=3, suppress=True)
+                # print(distance)
+                # print(old_centroid)
+                # print(new_centroid)
 
+                
+                updated_centroid = alpha*old_centroid + (1-alpha)*new_centroid # inizializzazione
+                distance_updated = distance_riemann(updated_centroid, old_centroid)
+                iter_counter = 0
 
+                while abs(distance_updated/distance - (1 - alpha)) > tol:
+                    if iter_counter > maxiter:
+                        rospy.logwarn(f' - WARNING: maxiter reached for class:{clss} and bId:{bId}.')  
+                        break
 
+                    tan_updated_centroid = log_map_riemann(updated_centroid, Cref=updated_centroid, C12=fullLogMap)
+                    if distance_updated/distance > (1 - alpha): tan_objective_centroid = log_map_riemann(old_centroid, Cref=updated_centroid, C12=fullLogMap) # da portare verso old centroid
+                    else:                                       tan_objective_centroid = log_map_riemann(new_centroid, Cref=updated_centroid, C12=fullLogMap) # da portare verso new centroid
+                    directional_matrix = tan_objective_centroid - tan_updated_centroid  # like vector that connects the two points
+                    tan_updated_centroid += abs(distance_updated/distance - (1 - alpha))*directional_matrix  # to 'recover' the distance that is missing
+                    updated_centroid = exp_map_riemann(tan_updated_centroid, Cref=updated_centroid, Cm12=fullLogMap)  # to go back to the manifold
+                    distance_updated = distance_riemann(updated_centroid, old_centroid)
+                    iter_counter += 1
+                    
+                    
+                if not is_sym_pos_def(updated_centroid):    # non dovrebbe mai succedere, ma si sa mai
+                    rospy.logwarn(f' - WARNING: updated centroid is not SPD for class:{clss} and bId:{bId}. Keeping the old centroid')  
+                    updated_centroid = old_centroid
+                
+                self.mdl[bId]._mdm.covmeans_[clssId] = updated_centroid
+        print(f'Classifiers updated. Distance updated: {distance_updated:.5f} - distance: {distance:.5f} - rapporto: {1-distance_updated/distance:.5f}')
+               
 
 
 
