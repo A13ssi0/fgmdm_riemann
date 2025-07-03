@@ -7,10 +7,9 @@ from pyriemann.utils.tangentspace import tangent_space, log_map_riemann, exp_map
 from pyriemann.utils.mean import mean_riemann
 from pyriemann.utils.distance import distance_riemann
 from pyriemann.utils.test import is_sym_pos_def
-import rospy
+import warnings
 
 
-# model.centroids_  # shape (n_classes, n_features)
 
 class FgMDM:
 
@@ -19,13 +18,16 @@ class FgMDM:
         self.mdl = []
 
 
-    def train(self, data, labels, classes, idx_train, idx_val):#, ref_matrix, n_components_W=None):
+    def train(self, data, labels, classes, idx_train=[], idx_val=[]):#, ref_matrix, n_components_W=None):
+        if len(idx_train) == 0:     idx_train = np.ones(data.shape[1], dtype=bool)
+
+        self.n_classes = len(classes)
         self.classes = np.array(classes)
 
         self.n_bands = data.shape[0]
-        self.n_classes = len(classes)
-
         self.n_channels = data.shape[2]
+
+        self.trainCF = np.empty((self.n_bands, self.n_classes, self.n_classes), dtype=int)
 
         for bId in range(self.n_bands):
             cov_train = data[bId, idx_train]
@@ -34,9 +36,12 @@ class FgMDM:
             model = fgmdm(n_jobs=self.njobs)
             model.fit(cov_train,lbl_train)
 
+            self.trainCF[bId] = self.get_confusion_matrix(self.predict(cov_train), lbl_train)
+            print_confusion_matrix(self.trainCF[bId], labels=[str(cl) for cl in self.classes])
+
             self.mdl.append(model)
 
-        #self.evaluate_on_validation(data[:,idx_val], labels[idx_val])
+        if len(idx_val)>0:  self.evaluate_on_validation(data[:,idx_val], labels[idx_val])
 
 
     def evaluate_on_validation(self, data, labels):
@@ -148,7 +153,7 @@ class FgMDM:
 
                 while abs(distance_updated/distance - (1 - alpha)) > tol:
                     if iter_counter > maxiter:
-                        rospy.logwarn(f' - WARNING: maxiter reached for class:{clss} and bId:{bId}.')  
+                        warnings.warn(f' - WARNING: maxiter reached for class:{clss} and bId:{bId}.')  
                         break
 
                     tan_updated_centroid = log_map_riemann(updated_centroid, Cref=updated_centroid, C12=fullLogMap)
@@ -162,12 +167,54 @@ class FgMDM:
                     
                     
                 if not is_sym_pos_def(updated_centroid):    # non dovrebbe mai succedere, ma si sa mai
-                    rospy.logwarn(f' - WARNING: updated centroid is not SPD for class:{clss} and bId:{bId}. Keeping the old centroid')  
+                    warnings.warn(f' - WARNING: updated centroid is not SPD for class:{clss} and bId:{bId}. Keeping the old centroid')  
                     updated_centroid = old_centroid
                 
                 self.mdl[bId]._mdm.covmeans_[clssId] = updated_centroid
         print(f'Classifiers updated. Distance updated: {distance_updated:.5f} - distance: {distance:.5f} - rapporto: {1-distance_updated/distance:.5f}')
                
+
+# -----------------------------------------------------------------------------------------------------
+
+from rich.console import Console
+from rich.table import Table
+from rich import box
+
+def print_confusion_matrix(matrix, labels=None):
+    console = Console()
+    n = len(matrix)
+    table = Table(show_header=True, header_style="bold bright_cyan", box=box.SIMPLE_HEAVY)
+
+    # Add column headers
+    table.add_column(" ", style="bold bright_cyan")
+    for i in range(n):
+        label = labels[i] if labels else str(i)
+        table.add_column(f"P_{label}", justify="center")
+
+    # Add matrix rows
+    max_val = matrix.max()
+    for i in range(n):
+        label = labels[i] if labels else str(i)
+        row = [f"[bright_yellow]T_{label}[/]"]
+        for j in range(n):
+            val = matrix[i][j]
+            ratio = val / max_val if max_val else 0
+
+            # Bright color gradient
+            if i == j:
+                color = "bold bright_green"
+            elif ratio > 0.66:
+                color = "bold bright_red"
+            elif ratio > 0.33:
+                color = "bright_magenta"
+            else:
+                color = "bright_black"
+
+            row.append(f"[{color}]{val}[/]")
+        table.add_row(*row)
+
+    console.print(table)
+
 
 
 
