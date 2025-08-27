@@ -36,10 +36,15 @@ class FgMDM:
             model = fgmdm(n_jobs=self.njobs)
             model.fit(cov_train,lbl_train)
 
-            self.trainCF[bId] = self.get_confusion_matrix(self.predict(cov_train), lbl_train)
+            self.mdl.append(model)
+
+            t_cov_train = np.expand_dims(cov_train, axis=0)
+            self.trainCF[bId] = self.get_confusion_matrix(self.predict(t_cov_train), lbl_train)
             print_confusion_matrix(self.trainCF[bId], labels=[str(cl) for cl in self.classes])
 
-            self.mdl.append(model)
+            print(f' - Model accuracy for band {bId+1}/{self.n_bands}: {self.get_accuracies(self.predict(t_cov_train), lbl_train)[bId]:.3f}')
+
+            
 
         if len(idx_val)>0:  self.evaluate_on_validation(data[:,idx_val], labels[idx_val])
 
