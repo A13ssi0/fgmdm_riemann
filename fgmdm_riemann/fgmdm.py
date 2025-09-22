@@ -2,13 +2,13 @@
 
 import numpy as np
 from pyriemann.classification import FgMDM as fgmdm
-from sklearn.metrics import cohen_kappa_score, confusion_matrix, log_loss
+from sklearn.metrics import confusion_matrix
 from pyriemann.utils.tangentspace import tangent_space, log_map_riemann, exp_map_riemann
 from pyriemann.utils.mean import mean_riemann
 from pyriemann.utils.distance import distance_riemann
 from pyriemann.utils.test import is_sym_pos_def
 import warnings
-
+import time
 
 
 class FgMDM:
@@ -18,7 +18,7 @@ class FgMDM:
         self.mdl = []
 
 
-    def train(self, data, labels, classes, idx_train=[], idx_val=[]):#, ref_matrix, n_components_W=None):
+    def train(self, data, labels, classes, idx_train=[], idx_val=[], rejectionTh=None):#, ref_matrix, n_components_W=None):
         if len(idx_train) == 0:     idx_train = np.ones(data.shape[1], dtype=bool)
 
         self.n_classes = len(classes)
@@ -27,7 +27,10 @@ class FgMDM:
         self.n_bands = data.shape[0]
         self.n_channels = data.shape[2]
 
+        self.rejectionTh = rejectionTh
+
         self.trainCF = np.empty((self.n_bands, self.n_classes, self.n_classes), dtype=int)
+        self.trainRejectionCF = np.empty((self.n_bands, self.n_classes, self.n_classes), dtype=int)
 
         for bId in range(self.n_bands):
             cov_train = data[bId, idx_train]
@@ -39,12 +42,15 @@ class FgMDM:
             self.mdl.append(model)
 
             t_cov_train = np.expand_dims(cov_train, axis=0)
-            self.trainCF[bId] = self.get_confusion_matrix(self.predict(t_cov_train), lbl_train)
+            classes_train = self.predict(t_cov_train)
+            self.trainCF[bId] = self.get_confusion_matrix(classes_train, lbl_train)
             print_confusion_matrix(self.trainCF[bId], labels=[str(cl) for cl in self.classes])
+            print(f' - Model accuracy for band {bId+1}/{self.n_bands}: {self.get_accuracies(classes_train, lbl_train)[bId]:.3f}')
 
-            print(f' - Model accuracy for band {bId+1}/{self.n_bands}: {self.get_accuracies(self.predict(t_cov_train), lbl_train)[bId]:.3f}')
-
-            
+            classes_train_rej = self.predict(t_cov_train, rejectionTh=rejectionTh)
+            self.trainRejectionCF[bId] = self.get_confusion_matrix(classes_train_rej, lbl_train)
+            print_confusion_matrix(self.trainRejectionCF[bId], labels=[str(cl) for cl in self.classes])
+            print(f' - Model accuracy for band {bId+1}/{self.n_bands} (rej:{self.rejectionTh}; #lowConfidence:{sum(np.isnan(classes_train_rej[bId]))}): {self.get_accuracies(classes_train_rej, lbl_train)[bId]:.3f}')
 
         if len(idx_val)>0:  self.evaluate_on_validation(data[:,idx_val], labels[idx_val])
 
@@ -61,23 +67,27 @@ class FgMDM:
         self.get_merge_grid()
         #self.evaluate_on_merged_models(data, labels)
         
-
-
-    def predict(self,data):
-        pred_proba = self.predict_probabilities(data)
-        pred_class = np.zeros(pred_proba.shape[0:2], dtype=int)
+    def predict(self, data, rejectionTh=None):
+        pred_proba = self.predict_probabilities(data, rejectionTh=rejectionTh)
+        pred_class = np.full((self.n_bands, pred_proba.shape[1]), np.nan)
         for bId in range(self.n_bands):
-            cl = np.argmax(pred_proba[bId],axis=1)
-            pred_class[bId] = self.classes[cl]
+            low_confidence = np.isnan(pred_proba[bId,:,0])
+            cl = np.argmax(pred_proba[bId, ~low_confidence], axis=1)
+            pred_class[bId, ~low_confidence] = self.classes[cl]
         return pred_class
 
 
-    def predict_probabilities(self,data):
+    def predict_probabilities(self, data, rejectionTh=None):
         n_samples = data.shape[1]
         pred_proba = np.empty((self.n_bands, n_samples, self.n_classes), dtype=float)
         for bId in range(self.n_bands):
             model = self.mdl[bId]
+            # kk = time.time()
             pred_proba[bId] = model.predict_proba(data[bId])
+            # print(f" ---- [FgMDM] Time for prediction band {bId}: {time.time()-kk}")  # for testing
+            if rejectionTh is not None:
+                low_confidence = (np.max(pred_proba[bId], axis=1) < rejectionTh)
+                pred_proba[bId, low_confidence, :] = None
         return pred_proba
     
     
@@ -91,13 +101,20 @@ class FgMDM:
     
 
     def get_accuracies(self, pred_class, true_class):
-        return np.sum(pred_class==true_class,axis=1)/len(true_class)
+        if pred_class.ndim == 1:  pred_class = np.expand_dims(pred_class, axis=0)
+        accuracies = np.empty(pred_class.shape[0], dtype=float)
+        for bId in range(pred_class.shape[0]):
+            low_confidence = np.isnan(pred_class[bId])
+            accuracies[bId] = np.sum(pred_class[bId,~low_confidence]==true_class[~low_confidence])/len(true_class[~low_confidence])
+        return accuracies
 
 
     def get_confusion_matrix(self, pred_class, true_class):
         confMatrix = np.empty((self.n_bands, self.n_classes, self.n_classes),dtype=int)
         for bId in range(self.n_bands):
-            confMatrix[bId] = confusion_matrix(true_class, pred_class[bId])
+            low_confidence = np.isnan(pred_class[bId,:])
+            t_pred_class = pred_class[bId,~low_confidence].astype(int)
+            confMatrix[bId] = confusion_matrix(true_class[~low_confidence], t_pred_class)
         return confMatrix
 
 
@@ -127,6 +144,7 @@ class FgMDM:
         tan_centroids = tangent_space(centroids, Cref=Cref)
         return [centroids, tan_centroids]
     
+
     def update(self, update_batch, alpha=0.98, maxiter=25, tol=0.01, fullLogMap=True):
         # COVS HANNO LA PRIMA E SECONDA DIMENSIONE INVERTITE, DOVREBBERE ESSERE N_BANDS X N_SAMPLES X N_CHANNELS X N_CHANNELS
         # SE TI SERVE FAI UN np.transpose(covs, (1,0,2,3)) RICORDA DI CAMBIARE GLI INDICI DOPO PERÒ!!! No no, era per ricordarmi questa cosa degli indici invertiti
