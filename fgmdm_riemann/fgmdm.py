@@ -105,7 +105,11 @@ class FgMDM:
         accuracies = np.empty(pred_class.shape[0], dtype=float)
         for bId in range(pred_class.shape[0]):
             low_confidence = np.isnan(pred_class[bId])
-            accuracies[bId] = np.sum(pred_class[bId,~low_confidence]==true_class[~low_confidence])/len(true_class[~low_confidence])
+            accepted = ~low_confidence
+            if not np.any(accepted):
+                accuracies[bId] = np.nan
+                continue
+            accuracies[bId] = np.sum(pred_class[bId, accepted]==true_class[accepted])/len(true_class[accepted])
         return accuracies
 
 
@@ -113,8 +117,13 @@ class FgMDM:
         confMatrix = np.empty((self.n_bands, self.n_classes, self.n_classes),dtype=int)
         for bId in range(self.n_bands):
             low_confidence = np.isnan(pred_class[bId,:])
-            t_pred_class = pred_class[bId,~low_confidence].astype(int)
-            confMatrix[bId] = confusion_matrix(true_class[~low_confidence], t_pred_class)
+            accepted = ~low_confidence
+            if not np.any(accepted):
+                confMatrix[bId] = np.zeros((self.n_classes, self.n_classes), dtype=int)
+                continue
+
+            t_pred_class = pred_class[bId, accepted].astype(int)
+            confMatrix[bId] = confusion_matrix(true_class[accepted], t_pred_class, labels=self.classes)
         return confMatrix
 
 
