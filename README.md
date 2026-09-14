@@ -183,7 +183,7 @@ merged_probabilities = model.merge_bands(predicted_probabilities)
 
 `merge_grid` is currently populated from validation accuracies by `get_merge_grid()`.
 
-### `FgMDM.update()`
+### `FgMDM.update(), in development`
 
 Update class centroids from a batch of labeled covariance matrices.
 
